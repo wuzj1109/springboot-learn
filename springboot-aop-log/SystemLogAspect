@@ -1,0 +1,256 @@
+package com.config;
+
+import com.common.model.IotOperationLogModel;
+import com.controller.SystemControllerLog;
+import com.entity.UserData;
+import com.security.AuthService;
+import com.service.*;
+import org.aspectj.lang.JoinPoint;
+import org.aspectj.lang.annotation.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpSession;
+import java.lang.reflect.Method;
+import java.net.InetAddress;
+import java.sql.Timestamp;
+
+@Aspect
+@Component
+@SuppressWarnings("all")
+public class SystemLogAspect {
+    //注入Service用于把日志保存数据库，实际项目入库采用队列做异步
+ //   @Resource
+ //   private ActionService actionService;
+    @Autowired
+    private AuthService authService;
+    @Autowired
+    private UserDataService userDataService;
+    @Autowired
+    private EnterpriseDataAnalysisService enterpriseDataAnalysisService;
+    @Autowired
+    private IndustryActiveService industryActiveService;
+    @Autowired
+    private IndustryDevelopService industryDevelopService;
+    @Autowired
+    private IndustryGrowthService industryGrowthService;
+    @Autowired
+    private IotClassicCaseService iotClassicCaseService;
+    @Autowired
+    private IotEnterpriseDataMonthService iotEnterpriseDataMonthService;
+    @Autowired
+    private IotIndustryDataService iotIndustryDataService;
+    @Autowired
+    private RegionalDataMapService regionalDataMapService;
+    @Autowired
+    private IotOperationLogService iotOperationLogService;
+    //本地异常日志记录对象
+    private static final Logger logger = LoggerFactory.getLogger(SystemLogAspect.class);
+    //Service层切点
+    @Pointcut("@annotation(com.service.SystemServiceLog)")
+    public void serviceAspect(){
+    }
+
+    //Controller层切点
+    @Pointcut("@annotation(com.controller.SystemControllerLog)")
+    public void controllerAspect(){
+    }
+
+    /**
+     * @Description  后置通知  用于拦截Controller层记录用户的操作
+     * @date 2019年10月23日
+     */
+
+    //@Before("controllerAspect()")
+    @After("controllerAspect()")
+    public void doBefore(JoinPoint joinPoint){
+        HttpServletRequest request = ((ServletRequestAttributes) RequestContextHolder.getRequestAttributes()).getRequest();
+        HttpSession session = request.getSession();
+        //读取session中的用户
+    //    UserData userData = (UserData) session.getAttribute("user");
+        UserData userData =authService.getCurrentUser();
+
+
+        String ip = getIp(request);
+
+        try {
+            //*========控制台输出=========*//
+            System.out.println("==============后置通知开始==============");
+            System.out.println("请求方法:" + (joinPoint.getTarget().getClass().getName() + "." + joinPoint.getSignature().getName()));
+            System.out.println("方法描述：" + getControllerMethodDescription(joinPoint));
+            System.out.println("请求时间:" + new Timestamp(System.currentTimeMillis()));
+            System.out.println("请求人："+userData.getUserName());
+            System.out.println("请求ip："+ip);
+
+            //*========数据库日志=========*//
+            IotOperationLogModel model = new IotOperationLogModel();
+            model.setOperatorId(userData.getUserId());
+            model.setOperator(userData.getUserName());
+            model.setOperationModel(getControllerMethodDescription(joinPoint));
+            model.setOperationIp(ip);
+            //保存数据库
+            iotOperationLogService.insertIotOperationLog(model);
+
+        }catch (Exception e){
+            //记录本地异常日志
+            logger.error("==后置通知异常==");
+            logger.error("异常信息：{}",e.getMessage());
+        }
+    }
+
+    /**
+     * @Description  异常通知 用于拦截service层记录异常日志
+     */
+    @AfterThrowing(pointcut = "serviceAspect()",throwing = "e")
+  //  @Before("serviceAspect()")
+    public void doAfterThrowing(JoinPoint joinPoint,Throwable e){
+        HttpServletRequest request = ((ServletRequestAttributes) RequestContextHolder.getRequestAttributes()).getRequest();
+        HttpSession session = request.getSession();
+        //读取session中的用户
+        UserData userData =authService.getCurrentUser();
+        //获取请求ip
+        String ip = getIp(request);
+        //获取用户请求方法的参数并序列化为JSON格式字符串
+        try{
+            /*========控制台输出=========*/
+            System.out.println("=====异常通知开始=====");
+            System.out.println("异常代码:" + e.getClass().getName());
+            System.out.println("异常信息:" + e.getMessage());
+            System.out.println("异常方法:" + (joinPoint.getTarget().getClass().getName() + "." + joinPoint.getSignature().getName() + "()"));
+            System.out.println("方法描述:" + getServiceMethodDescription(joinPoint));
+            System.out.println("请求人:" + userData.getUserName());
+            System.out.println("请求IP:" + ip);
+            /*==========数据库日志=========*/
+          /*  Action action = new Action();
+            action.setActionDes(getServiceMethodDescription(joinPoint));
+            action.setActionType("1");
+            action.setUserId(user.getId());
+            action.setActionIp(ip);
+            action.setActionTime(new Date());
+            //保存到数据库
+            actionService.add(action);*/
+        }catch (Exception ex){
+            //记录本地异常日志
+            logger.error("==异常通知异常==");
+            logger.error("异常信息:{}", ex.getMessage());
+        }
+    }
+
+    /**
+     * @author wuzj
+     * @Description  获取注解中对方法的描述信息 用于service层注解
+     * @date 2019年10月23日
+     */
+    public static String getServiceMethodDescription(JoinPoint joinPoint)throws Exception{
+        String targetName = joinPoint.getTarget().getClass().getName();
+        String methodName = joinPoint.getSignature().getName();
+        Object[] arguments = joinPoint.getArgs();
+        Class targetClass = Class.forName(targetName);
+        Method[] methods = targetClass.getMethods();
+        String description = "";
+        for (Method method:methods) {
+            if (method.getName().equals(methodName)){
+                Class[] clazzs = method.getParameterTypes();
+                if (clazzs.length==arguments.length){
+                    description = method.getAnnotation(SystemServiceLog.class).description();
+                    break;
+                }
+            }
+        }
+        return description;
+    }
+
+    /**
+     * @author wuzj
+     * @Description  获取注解中对方法的描述信息 用于Controller层注解
+     * @date 2019年10月24日
+     */
+    public static String getControllerMethodDescription(JoinPoint joinPoint) throws Exception {
+        String targetName = joinPoint.getTarget().getClass().getName();
+        String methodName = joinPoint.getSignature().getName();//目标方法名
+        Object[] arguments = joinPoint.getArgs();
+        Class targetClass = Class.forName(targetName);
+        Method[] methods = targetClass.getMethods();
+        String description = "";
+        for (Method method:methods) {
+            if (method.getName().equals(methodName)){
+                Class[] clazzs = method.getParameterTypes();
+                if (clazzs.length==arguments.length){
+                    description = method.getAnnotation(SystemControllerLog.class).description();
+                    break;
+                }
+            }
+        }
+        return description;
+    }
+
+
+    /*public static String getIp() {
+        String sIP = "";
+        InetAddress ip = null;
+        try {
+            boolean bFindIP = false;
+            Enumeration<NetworkInterface> netInterfaces = NetworkInterface.getNetworkInterfaces();
+            while (netInterfaces.hasMoreElements()) {
+                if (bFindIP)
+                    break;
+                NetworkInterface ni = netInterfaces.nextElement();
+                Enumeration<InetAddress> ips = ni.getInetAddresses();
+                while (ips.hasMoreElements()) {
+                    ip = ips.nextElement();
+                    if (!ip.isLoopbackAddress()
+                            && ip.getHostAddress().matches("(\\d{1,3}\\.){3}\\d{1,3}")) {
+                        bFindIP = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        if (null != ip)
+            sIP = ip.getHostAddress();
+        return sIP;
+    }*/
+
+    public static String getIp(HttpServletRequest request) {
+        String ip = request.getHeader("x-forwarded-for");
+        if (ip == null || ip.length() == 0 || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("Proxy-Client-IP");
+        }
+        if (ip == null || ip.length() == 0 || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("WL-Proxy-Client-IP");
+        }
+        if (ip == null || ip.length() == 0 || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("X-Real-IP");
+        }
+        if (ip == null || ip.length() == 0 || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getRemoteAddr();
+        }
+        if (ip == null) {
+            ip = "";
+        }
+        if ("127.0.0.1".equals(ip) || "localhost".equalsIgnoreCase(ip) || "0:0:0:0:0:0:0:1".equals(ip)) {
+            try {
+                InetAddress addr = InetAddress.getLocalHost();
+                ip = addr.getHostAddress();
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        // 对于通过多个代理的情况，第一个IP为客户端真实IP,多个IP按照','分割
+        if (ip != null && ip.length() > 15) { // "***.***.***.***".length() = 15
+            if (ip.indexOf(",") > 0) {
+                ip = ip.substring(0, ip.indexOf(","));
+            }
+        }
+        return ip;
+    }
+
+}
