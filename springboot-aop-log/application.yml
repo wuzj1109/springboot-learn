@@ -1,0 +1,5 @@
+spring:
+  #切面启用
+  aop:
+    proxy-target-class: true
+    auto: true
