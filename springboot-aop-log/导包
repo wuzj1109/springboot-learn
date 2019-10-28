@@ -1,2 +1,9 @@
 //面向切面
 	compile('org.springframework.boot:spring-boot-starter-aop')
+	
+	
+	
+controller需要的实现:
+
+    @SystemControllerLog(description = "API使用分析")
+    public JsonResult getAPIOverallCallTrend(@RequestBody IotEnterpriseDataRequestModel model, BindingResult bindingResult) {}
